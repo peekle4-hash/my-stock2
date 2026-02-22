@@ -82,7 +82,7 @@ function loadRows() {
 }
 function saveRows(rows) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(rows));
-  scheduleCloudUpload('rows');
+  scheduleCloudSave();
 }
 
 function loadCloseMap(){
@@ -95,7 +95,7 @@ function loadCloseMap(){
 }
 function saveCloseMap(map){
   localStorage.setItem(CLOSE_KEY, JSON.stringify(map));
-  scheduleCloudUpload('close');
+  scheduleCloudSave();
 }
 function loadCollapsed() {
   try {
@@ -107,7 +107,7 @@ function loadCollapsed() {
 }
 function saveCollapsed(obj) {
   localStorage.setItem(COLLAPSE_KEY, JSON.stringify(obj));
-  scheduleCloudUpload('collapse');
+  scheduleCloudSave();
 }
 let collapsedDates = loadCollapsed();
 let closeMap = loadCloseMap();
@@ -156,7 +156,7 @@ function isDirty() {
   try { return localStorage.getItem(DIRTY_KEY) === "1"; } catch { return false; }
 }
 
-function scheduleCloudUpload(reason) {
+function scheduleCloudSave() {
   markDirty();
   if (!cloudCfg.auto) return;
   if (!canCloud()) return;
@@ -274,7 +274,7 @@ function setupBackupUI() {
       setCloudStatus('백업으로 복원 완료 ✅ (원하면 클라우드 저장 눌러서 업로드)', 'ok');
       markDirty();
       // 복원 후 자동 저장 켜져 있으면 업로드 예약
-      scheduleCloudUpload('restore');
+      scheduleCloudSave();
     } catch (e) {
       setCloudStatus(`복원 실패 ❌ (${e.message})`, 'err');
     } finally {
@@ -1403,37 +1403,21 @@ function addEmptyRow() {
 // --- Init ---
 let rows = [];
 
-document.addEventListener("DOMContentLoaded", () => {
+// auth.js의 showApp()에서 로그인 후 호출됨
+function initApp() {
   setupTabs();
-  setupCloudUI();
-    setupBackupUI();
-    // AUTO_CLOUD_BOOT: URL/토큰이 저장돼 있으면 자동 불러오기
-    try {
-      cloudCfg = loadCloudCfg();
-      if (canCloud()) {
-        // 로컬에 수정중(Dirty)이면 덮어쓰지 않고 안내
-        if (isDirty()) {
-          setCloudStatus('로컬 변경사항이 있어 자동 불러오기를 건너뜀(저장/불러오기 선택)');
-        } else {
-          cloudLoadAll().catch(e => setCloudStatus(`자동 불러오기 실패 ❌ (${e.message})`, 'err'));
-        }
-      }
-    } catch {}
-
 
   rows = loadRows();
-    $("asOfDate").value = (localStorage.getItem(ASOF_KEY) || todayISO());
+  $("asOfDate").value = (localStorage.getItem(ASOF_KEY) || todayISO());
 
   $("addRowBtn").addEventListener("click", addEmptyRow);
-
-  $("clearCloseBtn").addEventListener("click", clearCloseForDate);
   $("exportBtn").addEventListener("click", exportCSV);
   $("clearBtn").addEventListener("click", clearAll);
   $("asOfDate").addEventListener("change", () => {
     const v = normDateIso($("asOfDate").value || "");
     if (v) localStorage.setItem(ASOF_KEY, v);
     renderFull();
-    scheduleCloudUpload();
+    scheduleCloudSave();
   });
 
   $("importFile").addEventListener("change", (e) => {
@@ -1442,7 +1426,6 @@ document.addEventListener("DOMContentLoaded", () => {
     e.target.value = "";
   });
 
-  // hold scope buttons
   const setScope = (s) => {
     holdScope = s;
     $("holdScopeAll").classList.toggle("active", s === "ALL");
@@ -1455,15 +1438,13 @@ document.addEventListener("DOMContentLoaded", () => {
   $("holdScopeGEN").addEventListener("click", () => setScope("GEN"));
 
   if (!rows.length) {
-    // 첫 실행(로컬 데이터 없음)에는 "화면용 빈 행"만 보여주고,
-    // 사용자가 입력/행추가를 하기 전까지는 로컬/클라우드에 저장하지 않음(빈 데이터로 덮어쓰기 방지)
     const seed = $("asOfDate").value || todayISO();
     rows.push(blankRow(seed));
     renderFull();
   } else {
     renderFull();
   }
-});
+}
 
 function fmtQty(n) {
   if (n === "" || n === null || n === undefined || Number.isNaN(n)) return "-";
