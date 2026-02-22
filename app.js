@@ -2,7 +2,26 @@ const STORAGE_KEY = "stockTradeRows.v1";
 const CLOSE_KEY = "stockTradeCloseByDate.v1";
 
 const COLLAPSE_KEY = "stockTradeCollapseDates.v1";
+const CLOUD_CFG_KEY = "stockTradeCloudCfg.v1";
 const $ = (id) => document.getElementById(id);
+
+// ===== 탭 =====
+function activateTab(tabId, pushHash = true) {
+  document.querySelectorAll('.tab-page').forEach(el => el.classList.toggle('active', el.id === tabId));
+  document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === tabId));
+  if (pushHash) {
+    try { history.replaceState(null, '', `#${tabId}`); } catch {}
+  }
+  // 표/차트가 숨겨졌다가 보이면 사이즈 계산이 깨질 수 있어서 한 번 더 리렌더
+  try { renderFull(); } catch {}
+}
+function setupTabs() {
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => activateTab(btn.dataset.tab));
+  });
+  const fromHash = (location.hash || '').replace('#', '').trim();
+  if (fromHash && document.getElementById(fromHash)) activateTab(fromHash, false);
+}
 
 function todayISO() {
   const d = new Date();
@@ -52,6 +71,7 @@ function loadRows() {
 }
 function saveRows(rows) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(rows));
+  scheduleCloudUpload('rows');
 }
 
 function loadCloseMap(){
@@ -64,6 +84,7 @@ function loadCloseMap(){
 }
 function saveCloseMap(map){
   localStorage.setItem(CLOSE_KEY, JSON.stringify(map));
+  scheduleCloudUpload('close');
 }
 function loadCollapsed() {
   try {
@@ -75,9 +96,132 @@ function loadCollapsed() {
 }
 function saveCollapsed(obj) {
   localStorage.setItem(COLLAPSE_KEY, JSON.stringify(obj));
+  scheduleCloudUpload('collapse');
 }
 let collapsedDates = loadCollapsed();
 let closeMap = loadCloseMap();
+
+// ===== 구글시트(클라우드) 동기화 =====
+function loadCloudCfg() {
+  try {
+    const raw = localStorage.getItem(CLOUD_CFG_KEY);
+    if (!raw) return { url: '', token: '', auto: true };
+    const o = JSON.parse(raw);
+    return {
+      url: (o?.url || '').toString().trim(),
+      token: (o?.token || '').toString().trim(),
+      auto: o?.auto !== false,
+    };
+  } catch {
+    return { url: '', token: '', auto: true };
+  }
+}
+function saveCloudCfg(cfg) {
+  localStorage.setItem(CLOUD_CFG_KEY, JSON.stringify(cfg));
+}
+let cloudCfg = loadCloudCfg();
+let cloudUploadTimer = null;
+
+function setCloudStatus(msg) {
+  const el = $('gsStatus');
+  if (el) el.textContent = `상태: ${msg}`;
+}
+
+function canCloud() {
+  return !!(cloudCfg.url && cloudCfg.token);
+}
+
+function scheduleCloudUpload(reason) {
+  if (!cloudCfg.auto) return;
+  if (!canCloud()) return;
+  if (cloudUploadTimer) clearTimeout(cloudUploadTimer);
+  cloudUploadTimer = setTimeout(() => {
+    cloudUploadTimer = null;
+    cloudSaveAll().catch(() => {});
+  }, 900);
+}
+
+async function cloudCall(action, payloadObj) {
+  if (!canCloud()) throw new Error('URL/토큰이 비어있어요');
+  const body = JSON.stringify({ action, token: cloudCfg.token, payload: payloadObj || null });
+  const res = await fetch(cloudCfg.url, {
+    method: 'POST',
+    // Apps Script는 JSON을 text/plain으로 보내는 쪽이 가장 안정적
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body,
+  });
+  const txt = await res.text();
+  let data;
+  try { data = JSON.parse(txt); } catch { data = { ok: false, error: txt }; }
+  if (!data?.ok) throw new Error(data?.error || '클라우드 요청 실패');
+  return data;
+}
+
+async function cloudSaveAll() {
+  setCloudStatus('업로드 중…');
+  const payload = {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    rows,
+    closeMap,
+    collapsedDates,
+  };
+  await cloudCall('save', payload);
+  setCloudStatus('업로드 완료 ✅');
+}
+
+async function cloudLoadAll() {
+  setCloudStatus('불러오는 중…');
+  const data = await cloudCall('load', null);
+  const p = data?.payload;
+  if (!p) throw new Error('payload 없음');
+  rows = Array.isArray(p.rows) ? p.rows : [];
+  closeMap = (p.closeMap && typeof p.closeMap === 'object') ? p.closeMap : {};
+  collapsedDates = (p.collapsedDates && typeof p.collapsedDates === 'object') ? p.collapsedDates : {};
+
+  // 로컬도 같이 갱신
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(rows));
+  localStorage.setItem(CLOSE_KEY, JSON.stringify(closeMap));
+  localStorage.setItem(COLLAPSE_KEY, JSON.stringify(collapsedDates));
+
+  renderFull();
+  setCloudStatus('불러오기 완료 ✅');
+}
+
+function setupCloudUI() {
+  const urlEl = $('gsUrl');
+  const tokEl = $('gsToken');
+  const autoEl = $('gsAuto');
+  const loadBtn = $('gsLoadBtn');
+  const saveBtn = $('gsSaveBtn');
+
+  if (!urlEl || !tokEl || !autoEl || !loadBtn || !saveBtn) return;
+
+  urlEl.value = cloudCfg.url;
+  tokEl.value = cloudCfg.token;
+  autoEl.checked = !!cloudCfg.auto;
+  setCloudStatus('대기');
+
+  const persist = () => {
+    cloudCfg = { url: urlEl.value.trim(), token: tokEl.value.trim(), auto: autoEl.checked };
+    saveCloudCfg(cloudCfg);
+  };
+  urlEl.addEventListener('change', persist);
+  tokEl.addEventListener('change', persist);
+  autoEl.addEventListener('change', persist);
+
+  saveBtn.addEventListener('click', async () => {
+    persist();
+    try { await cloudSaveAll(); }
+    catch (e) { setCloudStatus(`실패 ❌ (${e.message})`); }
+  });
+
+  loadBtn.addEventListener('click', async () => {
+    persist();
+    try { await cloudLoadAll(); }
+    catch (e) { setCloudStatus(`실패 ❌ (${e.message})`); }
+  });
+}
 function setGroupCollapsed(dateIso, isCollapsed) {
   collapsedDates[dateIso] = !!isCollapsed;
   saveCollapsed(collapsedDates);
@@ -1024,6 +1168,9 @@ function addEmptyRow() {
 let rows = [];
 
 document.addEventListener("DOMContentLoaded", () => {
+  setupTabs();
+  setupCloudUI();
+
   rows = loadRows();
   $("asOfDate").value = todayISO();
 
