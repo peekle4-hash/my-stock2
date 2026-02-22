@@ -3,8 +3,18 @@
 <html lang="ko">
 <head>
   <meta charset="utf-8"/>
-  <meta content="width=device-width,initial-scale=1" name="viewport"/>
+  <meta content="width=device-width,initial-scale=1,viewport-fit=cover" name="viewport"/>
   <title>주식 매매기록 · 수익률 대시보드</title>
+
+  <!-- PWA -->
+  <link rel="manifest" href="./manifest.json"/>
+  <meta name="theme-color" content="#0f172a"/>
+  <meta name="mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-title" content="주식 대시보드"/>
+  <link rel="apple-touch-icon" href="./icon-192.png"/>
+
   <link href="./styles.css" rel="stylesheet"/>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
@@ -20,7 +30,7 @@
   <!-- 탭 네비게이션 -->
   <nav class="tabs" aria-label="페이지 탭">
     <button class="tab-btn active" data-tab="tab-dashboard" type="button">대시보드</button>
-    <button class="tab-btn" data-tab="tab-close" type="button">기준일 종가</button>
+    
     <button class="tab-btn" data-tab="tab-trades" type="button">매매기록</button>
     <button class="tab-btn" data-tab="tab-monthly" type="button">월별 수익률</button>
     <button class="tab-btn" data-tab="tab-sync" type="button">구글시트 연동</button>
@@ -107,25 +117,17 @@
     <div class="note">※ 계산 방식: <b>이동평균(평균단가)</b> 기준. 공매도/마이너스 보유수량은 지원 안 해요.</div>
   </section>
 
-  <!-- 2) 기준일 종가 입력 -->
-  <section class="card tab-page" id="tab-close">
+  <!-- 2) 기준일 종가 입력 - 탭에서 제거, 숨김 -->
+  <section class="card tab-page" id="tab-close" style="display:none">
     <div class="row">
       <h2>기준일 종가 입력</h2>
       <div class="grow"></div>
-      <div class="hint">기준 날짜에 대해 종가를 기업별로 한 번만 입력하면 평가손익이 자동 계산돼요. (미입력은 -)</div>
+      <div class="hint">기준 날짜에 대해 종가를 기업별로 입력하면 평가손익이 자동 계산돼요. (미입력은 -)</div>
     </div>
 
-    <div class="row">
-      <div class="bulk-box">
-        <label for="bulkClose"><b>일괄 입력</b> (한 줄에 하나: <code>기업명, 종가</code> 또는 <code>기업명 종가</code>)</label>
-        <textarea id="bulkClose" placeholder="예)
-삼성전자, 71500
-TIGER 미국S&amp;P500 25120" rows="4"></textarea>
-        <div class="row" style="margin-top:8px">
-          <button id="applyBulkCloseBtn">일괄 적용</button>
-          <button class="secondary" id="clearCloseBtn">이 기준일 종가 전체 지우기</button>
-        </div>
-      </div>
+    <div class="row" style="margin-bottom:8px">
+      <button id="addCloseRowBtn">+ 행 추가</button>
+      <button class="secondary" id="clearCloseBtn" style="margin-left:8px">이 기준일 종가 전체 지우기</button>
     </div>
 
     <div class="table-wrap mini">
@@ -135,6 +137,7 @@ TIGER 미국S&amp;P500 25120" rows="4"></textarea>
             <th>기업명</th>
             <th>종가</th>
             <th>기준일</th>
+            <th></th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -169,8 +172,9 @@ TIGER 미국S&amp;P500 25120" rows="4"></textarea>
       </div>
     </div>
 
-    <div class="row" style="margin-top:10px">
+    <div class="row" style="margin-top:10px;align-items:center">
       <h3 class="h3" style="font-size:16px;margin:0">현재 보유중</h3>
+      <span id="holdAsOfLabel" style="margin-left:12px;font-size:13px;color:#64748b;font-weight:500"></span>
     </div>
 
     <div class="table-wrap mini">
@@ -182,7 +186,7 @@ TIGER 미국S&amp;P500 25120" rows="4"></textarea>
             <th>보유수량</th>
             <th>평균단가</th>
             <th>보유원가</th>
-            <th>종가</th>
+            <th>종가 입력</th>
             <th>평가손익</th>
             <th>실현손익 누적</th>
             <th>총 손익</th>
@@ -314,6 +318,17 @@ TIGER 미국S&amp;P500 25120" rows="4"></textarea>
 
     <div class="note" id="gsStatus">상태: -</div>
 
+    <div class="row" style="margin-top:10px">
+      <div class="hint">백업: 혹시 모를 상황을 대비해 데이터 전체를 파일로 저장/복원할 수 있어요.</div>
+      <div class="grow"></div>
+      <div class="btns">
+        <button class="secondary" id="gsBackupBtn" type="button">백업 다운로드(JSON)</button>
+        <label class="btn-like" for="gsRestoreFile">백업으로 복원</label>
+        <input id="gsRestoreFile" type="file" accept="application/json" style="display:none" />
+      </div>
+    </div>
+
+
     <details style="margin-top:8px">
       <summary>설정 방법(처음 한 번만)</summary>
       <ol class="ol">
@@ -341,5 +356,80 @@ TIGER 미국S&amp;P500 25120" rows="4"></textarea>
 </footer>
 
 <script src="./app.js"></script>
+<script>
+// ===== Service Worker 등록 (PWA) =====
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js')
+      .then(reg => console.log('SW 등록 완료:', reg.scope))
+      .catch(err => console.log('SW 등록 실패:', err));
+  });
+}
+
+// ===== 홈화면 추가 배너 (iOS 안내 / Android 설치 프롬프트) =====
+(function() {
+  // Android: beforeinstallprompt 이벤트
+  let deferredPrompt = null;
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredPrompt = e;
+    showInstallBanner('android');
+  });
+
+  // iOS: Safari에서 standalone 모드가 아닐 때 안내
+  const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches
+    || window.navigator.standalone === true;
+
+  if (isIos && !isStandalone) {
+    showInstallBanner('ios');
+  }
+
+  function showInstallBanner(type) {
+    // 이미 닫은 경우 표시 안 함
+    if (localStorage.getItem('pwa_banner_dismissed')) return;
+
+    const banner = document.createElement('div');
+    banner.id = 'pwa-install-banner';
+    banner.style.cssText = `
+      position:fixed; bottom:0; left:0; right:0; z-index:9999;
+      background:#0f172a; color:#fff; padding:14px 18px;
+      display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+      box-shadow:0 -4px 24px rgba(0,0,0,0.3);
+      font-family:system-ui,sans-serif; font-size:14px;
+    `;
+
+    if (type === 'ios') {
+      banner.innerHTML = `
+        <span>📱 홈 화면에 추가하면 앱처럼 사용할 수 있어요!</span>
+        <span style="color:#94a3b8;font-size:12px">Safari 하단 공유 버튼 → '홈 화면에 추가'</span>
+        <button id="pwa-dismiss" style="margin-left:auto;background:transparent;border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:8px;padding:6px 12px;cursor:pointer;font-size:12px;">닫기</button>
+      `;
+    } else {
+      banner.innerHTML = `
+        <span>📲 이 앱을 설치해서 더 편하게 사용해보세요!</span>
+        <button id="pwa-install-btn" style="background:#3b82f6;border:none;color:#fff;border-radius:8px;padding:8px 16px;cursor:pointer;font-weight:700;font-size:13px;">설치하기</button>
+        <button id="pwa-dismiss" style="background:transparent;border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:8px;padding:8px 12px;cursor:pointer;font-size:12px;">닫기</button>
+      `;
+    }
+
+    document.body.appendChild(banner);
+
+    document.getElementById('pwa-dismiss')?.addEventListener('click', () => {
+      banner.remove();
+      localStorage.setItem('pwa_banner_dismissed', '1');
+    });
+
+    document.getElementById('pwa-install-btn')?.addEventListener('click', async () => {
+      if (deferredPrompt) {
+        deferredPrompt.prompt();
+        const { outcome } = await deferredPrompt.userChoice;
+        deferredPrompt = null;
+        banner.remove();
+      }
+    });
+  }
+})();
+</script>
 </body>
 </html>

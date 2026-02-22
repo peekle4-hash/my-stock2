@@ -3,6 +3,8 @@ const CLOSE_KEY = "stockTradeCloseByDate.v1";
 
 const COLLAPSE_KEY = "stockTradeCollapseDates.v1";
 const CLOUD_CFG_KEY = "stockTradeCloudCfg.v1";
+const DIRTY_KEY = "stockTradeDirty.v1";
+const LAST_SYNC_KEY = "stockTradeLastSync.v1";
 const $ = (id) => document.getElementById(id);
 const ASOF_KEY = "stockTradeAsOfDate.v1";
 
@@ -131,16 +133,31 @@ function saveCloudCfg(cfg) {
 let cloudCfg = loadCloudCfg();
 let cloudUploadTimer = null;
 
-function setCloudStatus(msg) {
+function setCloudStatus(msg, level) {
   const el = $('gsStatus');
-  if (el) el.textContent = `상태: ${msg}`;
+  if (!el) return;
+  el.textContent = `상태: ${msg}`;
+  el.classList.remove('ok','err');
+  if (level === 'ok') el.classList.add('ok');
+  if (level === 'err') el.classList.add('err');
 }
 
 function canCloud() {
   return !!(cloudCfg.url && cloudCfg.token);
 }
 
+function markDirty() {
+  try { localStorage.setItem(DIRTY_KEY, "1"); } catch {}
+}
+function clearDirty() {
+  try { localStorage.removeItem(DIRTY_KEY); } catch {}
+}
+function isDirty() {
+  try { return localStorage.getItem(DIRTY_KEY) === "1"; } catch { return false; }
+}
+
 function scheduleCloudUpload(reason) {
+  markDirty();
   if (!cloudCfg.auto) return;
   if (!canCloud()) return;
   if (cloudUploadTimer) clearTimeout(cloudUploadTimer);
@@ -177,7 +194,9 @@ async function cloudSaveAll() {
     baseDate: (document.getElementById('asOfDate')?.value || ''),
   };
   await cloudCall('save', payload);
-  setCloudStatus('업로드 완료 ✅');
+  clearDirty();
+  try { localStorage.setItem(LAST_SYNC_KEY, new Date().toISOString()); } catch {}
+  setCloudStatus('업로드 완료 ✅', 'ok');
 }
 
 async function cloudLoadAll() {
@@ -202,7 +221,66 @@ async function cloudLoadAll() {
   localStorage.setItem(COLLAPSE_KEY, JSON.stringify(collapsedDates));
 
   renderFull();
-  setCloudStatus('불러오기 완료 ✅');
+  setCloudStatus('불러오기 완료 ✅', 'ok');
+}
+
+function setupBackupUI() {
+  const backupBtn = $('gsBackupBtn');
+  const restoreFile = $('gsRestoreFile');
+  if (!backupBtn || !restoreFile) return;
+
+  backupBtn.addEventListener('click', () => {
+    // 최신 로컬 상태를 파일로 저장
+    const payload = {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      rows,
+      closeMap,
+      collapsedDates,
+      baseDate: (document.getElementById('asOfDate')?.value || localStorage.getItem(ASOF_KEY) || ''),
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `stock-dashboard-backup-${todayISO()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setCloudStatus('백업 파일 다운로드 완료 ✅', 'ok');
+  });
+
+  restoreFile.addEventListener('change', async () => {
+    const file = restoreFile.files && restoreFile.files[0];
+    if (!file) return;
+    try {
+      const txt = await file.text();
+      const obj = JSON.parse(txt);
+      if (!obj || typeof obj !== 'object') throw new Error('백업 파일 형식이 이상해요');
+      rows = Array.isArray(obj.rows) ? obj.rows : [];
+      closeMap = (obj.closeMap && typeof obj.closeMap === 'object') ? obj.closeMap : {};
+      collapsedDates = (obj.collapsedDates && typeof obj.collapsedDates === 'object') ? obj.collapsedDates : {};
+      const bd = normDateIso(obj.baseDate || '');
+      const el = document.getElementById('asOfDate');
+      if (el && bd) el.value = bd;
+      if (bd) localStorage.setItem(ASOF_KEY, bd);
+
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(rows));
+      localStorage.setItem(CLOSE_KEY, JSON.stringify(closeMap));
+      localStorage.setItem(COLLAPSE_KEY, JSON.stringify(collapsedDates));
+
+      renderFull();
+      setCloudStatus('백업으로 복원 완료 ✅ (원하면 클라우드 저장 눌러서 업로드)', 'ok');
+      markDirty();
+      // 복원 후 자동 저장 켜져 있으면 업로드 예약
+      scheduleCloudUpload('restore');
+    } catch (e) {
+      setCloudStatus(`복원 실패 ❌ (${e.message})`, 'err');
+    } finally {
+      restoreFile.value = '';
+    }
+  });
 }
 
 function setupCloudUI() {
@@ -230,13 +308,13 @@ function setupCloudUI() {
   saveBtn.addEventListener('click', async () => {
     persist();
     try { await cloudSaveAll(); }
-    catch (e) { setCloudStatus(`실패 ❌ (${e.message})`); }
+    catch (e) { setCloudStatus(`실패 ❌ (${e.message})`, 'err'); }
   });
 
   loadBtn.addEventListener('click', async () => {
     persist();
     try { await cloudLoadAll(); }
-    catch (e) { setCloudStatus(`실패 ❌ (${e.message})`); }
+    catch (e) { setCloudStatus(`실패 ❌ (${e.message})`, 'err'); }
   });
 }
 function setGroupCollapsed(dateIso, isCollapsed) {
@@ -456,40 +534,91 @@ function setCloseFor(asOfIso, company, value) {
 function buildCloseTable(ledger) {
   const asOfIso = $("asOfDate").value || todayISO();
   const tbody = $("closeTable").querySelector("tbody");
+
+  // 기존 행들의 현재 입력값 보존 (포커스 유지)
+  const focused = document.activeElement;
+  const focusedCompany = focused ? focused.getAttribute("data-close-company-name") : null;
+  const focusedField = focused ? focused.getAttribute("data-close-field") : null;
+
   tbody.innerHTML = "";
 
-  const companies = getCompaniesInPortfolio(ledger);
-  if (!companies.length) {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `<td colspan="3" style="color:#64748b">기업명을 입력하면 여기에서 기준일 종가를 한 번만 입력할 수 있어요.</td>`;
-    tbody.appendChild(tr);
-    return;
-  }
+  // closeMap에 저장된 기업들 + 행 추가로 새로 입력 중인 임시 행들 표시
+  const savedCompanies = Object.keys(closeMap[normDateIso(asOfIso)] || {});
 
-  for (const c of companies) {
+  for (const c of savedCompanies) {
     const v = getCloseFor(asOfIso, c);
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td style="text-align:left">${c}</td>
-      <td><input type="number" step="any" data-close-company="${c}" value="${Number.isFinite(v) ? v : ""}" placeholder="미입력은 -"></td>
-      <td style="color:#475569; font-variant-numeric: tabular-nums">${asOfIso}</td>
-    `;
-    tbody.appendChild(tr);
+    addCloseRow(tbody, asOfIso, c, Number.isFinite(v) ? v : "", false);
+  }
+}
+
+function addCloseRow(tbody, asOfIso, companyVal, priceVal, focusCompany) {
+  const candidates = getCompaniesInPortfolio(computeLedger(rows, asOfIso));
+  const tr = document.createElement("tr");
+  tr.innerHTML = `
+    <td>
+      <input type="text" list="closeCompanyList" placeholder="기업명"
+        data-close-company-name="${companyVal}"
+        data-close-field="company"
+        value="${companyVal}" style="width:100%">
+    </td>
+    <td>
+      <input type="number" step="any" placeholder="종가"
+        data-close-company-name="${companyVal}"
+        data-close-field="price"
+        value="${priceVal !== "" ? priceVal : ""}" style="width:100%">
+    </td>
+    <td style="color:#475569; font-variant-numeric: tabular-nums">${asOfIso}</td>
+    <td><button class="mini-danger" data-close-del>삭제</button></td>
+  `;
+  tbody.appendChild(tr);
+
+  const companyInp = tr.querySelector('[data-close-field="company"]');
+  const priceInp = tr.querySelector('[data-close-field="price"]');
+
+  // datalist 자동완성 (매매기록 기업명 목록)
+  let dl = document.getElementById("closeCompanyList");
+  if (!dl) {
+    dl = document.createElement("datalist");
+    dl.id = "closeCompanyList";
+    document.body.appendChild(dl);
+  }
+  dl.innerHTML = candidates.map(c => `<option value="${c}">`).join("");
+
+  function save() {
+    const company = companyInp.value.trim();
+    const price = Number(priceInp.value);
+    // 이전 기업명 key 정리
+    const oldName = companyInp.getAttribute("data-close-company-name");
+    if (oldName && oldName !== company) {
+      setCloseFor(asOfIso, oldName, NaN);
+    }
+    if (company) {
+      companyInp.setAttribute("data-close-company-name", company);
+      priceInp.setAttribute("data-close-company-name", company);
+      if (priceInp.value !== "" && Number.isFinite(price)) {
+        setCloseFor(asOfIso, company, price);
+      } else if (priceInp.value === "") {
+        setCloseFor(asOfIso, company, NaN);
+      }
+    }
+    const ledger2 = computeLedger(rows, asOfIso);
+    updateDerived(ledger2);
   }
 
-  // IMPORTANT: 입력 중 포커스가 날아가지 않게, 여기서는 renderFull()을 호출하지 않음.
-  // closeMap만 업데이트하고, 파생(평가손익/대시보드)만 다시 계산한다.
-  tbody.querySelectorAll("input[data-close-company]").forEach((inp) => {
-    inp.addEventListener("input", () => {
-      const company = inp.getAttribute("data-close-company");
-      const v = Number(inp.value);
-      if (inp.value === "") setCloseFor(asOfIso, company, NaN);
-      else setCloseFor(asOfIso, company, v);
+  companyInp.addEventListener("change", save);
+  companyInp.addEventListener("blur", save);
+  priceInp.addEventListener("input", save);
 
-      const ledger2 = computeLedger(rows, asOfIso);
-      updateDerived(ledger2);
-    });
+  // 삭제 버튼
+  tr.querySelector("[data-close-del]").addEventListener("click", () => {
+    const company = companyInp.value.trim();
+    if (company) setCloseFor(asOfIso, company, NaN);
+    tr.remove();
+    const ledger2 = computeLedger(rows, asOfIso);
+    updateDerived(ledger2);
   });
+
+  if (focusCompany) companyInp.focus();
 }
 
 function applyBulkClose() {
@@ -589,30 +718,85 @@ function renderHoldTableTo(tableId, items, emptyMsg) {
   const table = document.getElementById(tableId);
   if (!table) return;
   const tbody = table.querySelector("tbody");
-  tbody.innerHTML = "";
+  const isCurrent = tableId === "holdTableCurrent";
+  const asOfIso = $("asOfDate").value || todayISO();
+
+  // 기준일 표시
+  if (isCurrent) {
+    const label = document.getElementById("holdAsOfLabel");
+    if (label) label.textContent = `기준일: ${asOfIso} 종가 기준`;
+  }
 
   if (!items.length) {
+    tbody.innerHTML = "";
     const tr = document.createElement("tr");
     tr.innerHTML = `<td colspan="10" style="color:#64748b">${emptyMsg}</td>`;
     tbody.appendChild(tr);
     return;
   }
 
+  // 기존 행 재사용: 회사 목록이 같으면 input은 그대로 두고 계산 결과만 업데이트
+  const existingRows = Array.from(tbody.querySelectorAll("tr[data-hold-company]"));
+  const existingKeys = existingRows.map(r => r.getAttribute("data-hold-company"));
+  const newKeys = items.map(p => p.company);
+  const sameLayout = existingKeys.length === newKeys.length && existingKeys.every((k,i) => k === newKeys[i]);
+
+  if (sameLayout) {
+    // 레이아웃 동일 → input 건드리지 않고 계산 셀만 업데이트
+    existingRows.forEach((tr, i) => {
+      const p = items[i];
+      const cells = tr.querySelectorAll("td");
+      // cells: 기업명(0) 계좌(1) 수량(2) 평균단가(3) 원가(4) 종가input(5) 평가손익(6) 실현누적(7) 총손익(8) 수익률(9)
+      if (isCurrent) {
+        cells[6].textContent = Number.isFinite(p.unreal) ? fmtMoney(p.unreal) : "-";
+        cells[7].textContent = fmtMoney(p.realizedCum);
+        cells[8].textContent = fmtMoney(p.total);
+        cells[9].textContent = Number.isFinite(p.ret) ? fmtPct(p.ret) : "-";
+      }
+    });
+    return;
+  }
+
+  // 레이아웃 변경 → 전체 재렌더
+  tbody.innerHTML = "";
   for (const p of items) {
     const tr = document.createElement("tr");
+    tr.setAttribute("data-hold-company", p.company);
+
+    const closeTd = isCurrent
+      ? `<td><input type="number" step="any"
+            data-hold-close="${p.company}"
+            value="${Number.isFinite(p.close) ? p.close : ""}"
+            placeholder="-"
+            style="width:90px;text-align:right"></td>`
+      : `<td>${Number.isFinite(p.close) ? fmtMoney(p.close) : "-"}</td>`;
+
     tr.innerHTML = `
       <td>${p.company}</td>
       <td>${p.account}</td>
       <td>${fmtQty(p.qty)}</td>
       <td>${Number.isFinite(p.avg) ? fmtMoney(p.avg) : "-"}</td>
       <td>${fmtMoney(p.cost)}</td>
-      <td>${Number.isFinite(p.close) ? fmtMoney(p.close) : "-"}</td>
+      ${closeTd}
       <td>${Number.isFinite(p.unreal) ? fmtMoney(p.unreal) : "-"}</td>
       <td>${fmtMoney(p.realizedCum)}</td>
       <td>${fmtMoney(p.total)}</td>
       <td>${Number.isFinite(p.ret) ? fmtPct(p.ret) : "-"}</td>
     `;
     tbody.appendChild(tr);
+  }
+
+  if (isCurrent) {
+    tbody.querySelectorAll("input[data-hold-close]").forEach(inp => {
+      const company = inp.getAttribute("data-hold-close");
+      inp.addEventListener("input", () => {
+        const v = Number(inp.value);
+        if (inp.value === "") setCloseFor(asOfIso, company, NaN);
+        else if (Number.isFinite(v)) setCloseFor(asOfIso, company, v);
+        const ledger2 = computeLedger(rows, asOfIso);
+        updateDerived(ledger2);
+      });
+    });
   }
 }
 
@@ -685,7 +869,7 @@ function buildTable(rows, ledger) {
 
       tr.innerHTML = `
         <td><input type="date" value="${r.date || ""}" data-k="date" data-i="${idx}"></td>
-        <td><input type="text" value="${r.company || ""}" placeholder="예: 삼성전자" data-k="company" data-i="${idx}"></td>
+        <td><input type="text" list="closeCompanyList" value="${r.company || ""}" placeholder="예: 삼성전자" data-k="company" data-i="${idx}"></td>
         <td>
           <select data-k="account" data-i="${idx}">
             <option value="">선택</option>
@@ -706,10 +890,12 @@ function buildTable(rows, ledger) {
         <td><span data-role="cumReal" data-i="${idx}">${Number.isFinite(pr.cumReal) ? fmtMoney(pr.cumReal) : "-"}</span></td>
         <td>
           <div class="row-actions">
-            <button class="secondary" data-ins-up="${idx}" type="button">위추가</button>
-            <button class="secondary" data-ins-down="${idx}" type="button">아래추가</button>
-            <button class="secondary" data-move-up="${idx}" type="button">↑</button>
-            <button class="secondary" data-move-down="${idx}" type="button">↓</button>
+            <div class="row-actions-grid">
+              <button class="secondary" data-ins-up="${idx}" type="button">위추가</button>
+              <button class="secondary" data-ins-down="${idx}" type="button">아래추가</button>
+              <button class="secondary" data-move-up="${idx}" type="button">↑</button>
+              <button class="secondary" data-move-down="${idx}" type="button">↓</button>
+            </div>
             <button class="mini-danger" data-del="${idx}" type="button">삭제</button>
           </div>
         </td>
@@ -1181,12 +1367,27 @@ function updateDerived(ledger) {
   renderCharts(monthArr);
 }
 
+function refreshCompanyDatalist() {
+  const asOfIso = $("asOfDate").value || todayISO();
+  const ledger = computeLedger(rows, asOfIso);
+  const fromTrades = getCompaniesInPortfolio(ledger);
+  const fromClose = Object.keys(closeMap[normDateIso(asOfIso)] || {});
+  const all = Array.from(new Set([...fromTrades, ...fromClose])).sort((a,b)=>a.localeCompare(b));
+  let dl = document.getElementById("closeCompanyList");
+  if (!dl) {
+    dl = document.createElement("datalist");
+    dl.id = "closeCompanyList";
+    document.body.appendChild(dl);
+  }
+  dl.innerHTML = all.map(c => `<option value="${c}">`).join("");
+}
+
 function renderFull() {
   const iso = $("asOfDate").value || todayISO();
   const ledger = computeLedger(rows, iso);
   buildTable(rows, ledger);
-  buildCloseTable(ledger);
   updateDerived(ledger);
+  refreshCompanyDatalist();
 }
 
 function addEmptyRow() {
@@ -1205,12 +1406,26 @@ let rows = [];
 document.addEventListener("DOMContentLoaded", () => {
   setupTabs();
   setupCloudUI();
+    setupBackupUI();
+    // AUTO_CLOUD_BOOT: URL/토큰이 저장돼 있으면 자동 불러오기
+    try {
+      cloudCfg = loadCloudCfg();
+      if (canCloud()) {
+        // 로컬에 수정중(Dirty)이면 덮어쓰지 않고 안내
+        if (isDirty()) {
+          setCloudStatus('로컬 변경사항이 있어 자동 불러오기를 건너뜀(저장/불러오기 선택)');
+        } else {
+          cloudLoadAll().catch(e => setCloudStatus(`자동 불러오기 실패 ❌ (${e.message})`, 'err'));
+        }
+      }
+    } catch {}
+
 
   rows = loadRows();
     $("asOfDate").value = (localStorage.getItem(ASOF_KEY) || todayISO());
 
   $("addRowBtn").addEventListener("click", addEmptyRow);
-  $("applyBulkCloseBtn").addEventListener("click", applyBulkClose);
+
   $("clearCloseBtn").addEventListener("click", clearCloseForDate);
   $("exportBtn").addEventListener("click", exportCSV);
   $("clearBtn").addEventListener("click", clearAll);
@@ -1239,8 +1454,15 @@ document.addEventListener("DOMContentLoaded", () => {
   $("holdScopeISA").addEventListener("click", () => setScope("ISA"));
   $("holdScopeGEN").addEventListener("click", () => setScope("GEN"));
 
-  if (!rows.length) addEmptyRow();
-  else renderFull();
+  if (!rows.length) {
+    // 첫 실행(로컬 데이터 없음)에는 "화면용 빈 행"만 보여주고,
+    // 사용자가 입력/행추가를 하기 전까지는 로컬/클라우드에 저장하지 않음(빈 데이터로 덮어쓰기 방지)
+    const seed = $("asOfDate").value || todayISO();
+    rows.push(blankRow(seed));
+    renderFull();
+  } else {
+    renderFull();
+  }
 });
 
 function fmtQty(n) {
