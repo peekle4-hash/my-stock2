@@ -185,3 +185,35 @@ select{
 textarea{width:100%;border:1px solid #d1d5db;border-radius:10px;padding:10px;font-size:13px;resize:vertical}
 #closeTable{min-width:420px}
 #closeTable input[type="number"]{width:160px}
+
+
+/* ===== Segment Button Fix ===== */
+
+/* 기본 상태 */
+.segment-btn {
+  background-color: #f2f2f2;
+  color: #111;
+  border: 1px solid #ddd;
+  transition: none;
+}
+
+/* 마우스 올려도 색 유지 */
+.segment-btn:hover {
+  background-color: #f2f2f2;
+  color: #111;
+}
+
+/* 선택된 상태 */
+.segment-btn.active {
+  background-color: #111;
+  color: #fff;
+  border-color: #111;
+}
+
+/* 클릭/포커스 시 색 깨짐 방지 */
+.segment-btn:active,
+.segment-btn:focus {
+  background-color: inherit;
+  color: inherit;
+  outline: none;
+}
