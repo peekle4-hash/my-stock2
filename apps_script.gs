@@ -8,6 +8,14 @@
 
 const TOKEN = "CHANGE_ME"; // TODO: 원하는 토큰으로 변경
 const PROP_SS_ID = "STOCK_DASHBOARD_SS_ID";
+const PROP_BASE_DATE = "STOCK_DASHBOARD_BASE_DATE";
+
+function normCompany_(s) {
+  return (s == null ? "" : String(s)).trim().replace(/\s+/g, " ");
+}
+function normDateIso_(s) {
+  return (s == null ? "" : String(s)).trim().slice(0, 10);
+}
 
 function jsonOut(obj) {
   return ContentService
@@ -73,16 +81,32 @@ function doPost(e) {
       });
       clearAndWrite_(ss.getSheetByName("rows"), rowsValues);
 
-      // closeMap (flatten)
+      // closeMap (flatten, dedupe + normalize)
       const closeMap = (p.closeMap && typeof p.closeMap === "object") ? p.closeMap : {};
       const closeValues = [["date","company","close"]];
-      Object.keys(closeMap).forEach(date => {
-        const m = closeMap[date] || {};
-        Object.keys(m).forEach(company => {
-          closeValues.push([date, company, m[company]]);
+
+      // 같은 (date, company)가 여러 번 있으면 마지막 값으로 덮어쓰기
+      const last = {};
+      Object.keys(closeMap).forEach(dateRaw => {
+        const date = normDateIso_(dateRaw);
+        const m = closeMap[dateRaw] || {};
+        Object.keys(m).forEach(companyRaw => {
+          const company = normCompany_(companyRaw);
+          const key = date + "||" + company;
+          last[key] = { date, company, close: m[companyRaw] };
         });
       });
+      Object.keys(last).sort().forEach(k => {
+        const r = last[k];
+        closeValues.push([r.date, r.company, r.close]);
+      });
+
       clearAndWrite_(ss.getSheetByName("close"), closeValues);
+
+      // base date (기준일)도 저장해서 기기 간 동기화
+      if (p.baseDate) {
+        PropertiesService.getScriptProperties().setProperty(PROP_BASE_DATE, normDateIso_(p.baseDate));
+      }
 
       // collapsedDates (json 1-cell)
       const collapsed = (p.collapsedDates && typeof p.collapsedDates === "object") ? p.collapsedDates : {};
@@ -121,9 +145,10 @@ function doPost(e) {
       for (let i = 1; i < cv.length; i++) {
         const [date, company, close] = cv[i];
         if (!date || !company) continue;
-        const d = (date || "").toString().slice(0,10);
+        const d = normDateIso_(date);
+        const c = normCompany_(company);
         if (!outCloseMap[d]) outCloseMap[d] = {};
-        outCloseMap[d][company] = close;
+        outCloseMap[d][c] = close;
       }
 
       // collapsed
@@ -138,6 +163,7 @@ function doPost(e) {
         payload: {
           version: 1,
           updatedAt: PropertiesService.getScriptProperties().getProperty("UPDATED_AT") || "",
+          baseDate: PropertiesService.getScriptProperties().getProperty(PROP_BASE_DATE) || "",
           rows: outRows,
           closeMap: outCloseMap,
           collapsedDates: outCollapsed,
