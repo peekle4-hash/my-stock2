@@ -4,6 +4,15 @@ const CLOSE_KEY = "stockTradeCloseByDate.v1";
 const COLLAPSE_KEY = "stockTradeCollapseDates.v1";
 const CLOUD_CFG_KEY = "stockTradeCloudCfg.v1";
 const $ = (id) => document.getElementById(id);
+const ASOF_KEY = "stockTradeAsOfDate.v1";
+
+// 공백/특수문자 때문에 PC↔모바일에서 종목명이 미세하게 달라도 매칭되게 처리
+function normCompany(s) {
+  return (s ?? "").toString().trim().replace(/\s+/g, " ");
+}
+function normDateIso(s) {
+  return (s ?? "").toString().trim().slice(0, 10);
+}
 
 // ===== 탭 =====
 function activateTab(tabId, pushHash = true) {
@@ -165,6 +174,7 @@ async function cloudSaveAll() {
     rows,
     closeMap,
     collapsedDates,
+    baseDate: (document.getElementById('asOfDate')?.value || ''),
   };
   await cloudCall('save', payload);
   setCloudStatus('업로드 완료 ✅');
@@ -178,6 +188,13 @@ async function cloudLoadAll() {
   rows = Array.isArray(p.rows) ? p.rows : [];
   closeMap = (p.closeMap && typeof p.closeMap === 'object') ? p.closeMap : {};
   collapsedDates = (p.collapsedDates && typeof p.collapsedDates === 'object') ? p.collapsedDates : {};
+  // 기준일(날짜)도 기기 간 동기화
+  if (p.baseDate) {
+    const bd = normDateIso(p.baseDate);
+    const el = document.getElementById('asOfDate');
+    if (el && bd) el.value = bd;
+    if (bd) localStorage.setItem(ASOF_KEY, bd);
+  }
 
   // 로컬도 같이 갱신
   localStorage.setItem(STORAGE_KEY, JSON.stringify(rows));
@@ -402,18 +419,36 @@ function getCompaniesInPortfolio(ledger) {
 }
 
 function getCloseFor(asOfIso, company) {
-  const d = closeMap?.[asOfIso] || {};
-  const v = d[company];
+  const d = closeMap?.[normDateIso(asOfIso)] || {};
+  const raw = (company ?? "").toString();
+  const k = normCompany(raw);
+  // 1) 완전 일치 2) 정규화 키 3) (마지막) 정규화 비교로 찾기
+  let v = d[raw];
+  if (v === undefined) v = d[k];
+  if (v === undefined && k) {
+    for (const kk of Object.keys(d)) {
+      if (normCompany(kk) === k) { v = d[kk]; break; }
+    }
+  }
   const n = Number(v);
   return Number.isFinite(n) ? n : NaN;
 }
 
 function setCloseFor(asOfIso, company, value) {
-  if (!closeMap[asOfIso]) closeMap[asOfIso] = {};
+  const dateKey = normDateIso(asOfIso);
+  const raw = (company ?? "").toString();
+  const k = normCompany(raw);
+
+  if (!closeMap[dateKey]) closeMap[dateKey] = {};
   if (!Number.isFinite(value)) {
-    delete closeMap[asOfIso][company];
+    delete closeMap[dateKey][raw];
+    delete closeMap[dateKey][k];
+    // 혹시 예전 키가 있으면 같이 제거
+    for (const kk of Object.keys(closeMap[dateKey])) {
+      if (normCompany(kk) === k) delete closeMap[dateKey][kk];
+    }
   } else {
-    closeMap[asOfIso][company] = value;
+    closeMap[dateKey][k] = value;
   }
   saveCloseMap(closeMap);
 }
@@ -1172,14 +1207,19 @@ document.addEventListener("DOMContentLoaded", () => {
   setupCloudUI();
 
   rows = loadRows();
-  $("asOfDate").value = todayISO();
+    $("asOfDate").value = (localStorage.getItem(ASOF_KEY) || todayISO());
 
   $("addRowBtn").addEventListener("click", addEmptyRow);
   $("applyBulkCloseBtn").addEventListener("click", applyBulkClose);
   $("clearCloseBtn").addEventListener("click", clearCloseForDate);
   $("exportBtn").addEventListener("click", exportCSV);
   $("clearBtn").addEventListener("click", clearAll);
-  $("asOfDate").addEventListener("change", renderFull);
+  $("asOfDate").addEventListener("change", () => {
+    const v = normDateIso($("asOfDate").value || "");
+    if (v) localStorage.setItem(ASOF_KEY, v);
+    renderFull();
+    scheduleCloudUpload();
+  });
 
   $("importFile").addEventListener("change", (e) => {
     const f = e.target.files?.[0];

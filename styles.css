@@ -60,6 +60,11 @@ tbody tr:hover{background:#fafafa}
 .seg-btn:hover{background:#f1f5f9}
 .seg-btn.active:hover{filter:brightness(1.06)}
 
+/* 모바일(특히 iOS)에서 클릭/포커스 시 색이 하얗게 뒤집히는 현상 방지 */
+.seg .seg-btn{appearance:none;-webkit-appearance:none}
+.seg .seg-btn:focus{outline:none}
+.seg .seg-btn:active{background:#f1f5f9;color:#111827}
+.seg .seg-btn.active:active{background:#111827;color:#fff}
 /* ===== 탭 UI ===== */
 .tabs{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
 .tab-btn{border:1px solid rgba(255,255,255,0.22);background:rgba(255,255,255,0.08);color:#fff;border-radius:999px;padding:8px 12px;font-weight:900;cursor:pointer}
